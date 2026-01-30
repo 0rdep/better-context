@@ -16,8 +16,11 @@ import { Auth, getSupportedProviders } from '../providers/index.ts';
 import type { CollectionResult } from '../collections/types.ts';
 import { clearVirtualCollectionMetadata } from '../collections/virtual-metadata.ts';
 import { VirtualFs } from '../vfs/virtual-fs.ts';
+import { promises as fs } from 'node:fs';
+
 import type { AgentResult, TrackedInstance, InstanceInfo } from './types.ts';
 import { AgentLoop } from './loop.ts';
+import { CursorLoop } from './cursor-loop.ts';
 
 export namespace Agent {
 	// ─────────────────────────────────────────────────────────────────────────────
@@ -265,21 +268,76 @@ export namespace Agent {
 
 	export const create = (config: Config.Service): Service => {
 		/**
-		 * Ask a question and stream the response using the new AI SDK loop
+		 * Cleanup function to dispose of collection resources
+		 */
+		const cleanupCollection = async (collection: { vfsId?: string; realPath?: string }) => {
+			if (collection.vfsId) {
+				VirtualFs.dispose(collection.vfsId);
+				clearVirtualCollectionMetadata(collection.vfsId);
+			}
+			// Clean up real path temp directory if it exists
+			if (collection.realPath) {
+				try {
+					await fs.rm(collection.realPath, { recursive: true, force: true });
+				} catch {
+					// Ignore cleanup errors
+				}
+			}
+		};
+
+		/**
+		 * Ask a question and stream the response using the configured CLI backend
 		 */
 		const askStream: Service['askStream'] = async ({ collection, question }) => {
 			Metrics.info('agent.ask.start', {
 				provider: config.provider,
 				model: config.model,
+				cliBackend: config.cliBackend,
 				questionLength: question.length
 			});
 
-			const cleanup = () => {
-				if (!collection.vfsId) return;
-				VirtualFs.dispose(collection.vfsId);
-				clearVirtualCollectionMetadata(collection.vfsId);
-			};
+			const cleanup = () => void cleanupCollection(collection);
 
+			// Use Cursor CLI backend if configured
+			if (config.cliBackend === 'cursor') {
+				// Cursor CLI needs a real filesystem path, not VFS
+				const realPath = collection.realPath;
+				if (!realPath) {
+					cleanup();
+					throw new AgentError({
+						message: 'Cursor CLI backend requires a real filesystem path',
+						hint: 'The collection could not create a real filesystem path. Check disk space and permissions.'
+					});
+				}
+
+				let cursorModel: string | undefined;
+				const eventGenerator = (async function* () {
+					try {
+						const stream = CursorLoop.stream({
+							collectionPath: realPath,
+							question,
+							agentInstructions: collection.agentInstructions,
+							model: config.model,
+							timeoutMs: config.providerTimeoutMs,
+							onInit: ({ model }) => {
+								cursorModel = model;
+							}
+						});
+						for await (const event of stream) {
+							yield event;
+						}
+					} finally {
+						cleanup();
+					}
+				})();
+
+				return {
+					stream: eventGenerator,
+					model: { provider: 'cursor', model: cursorModel ?? config.model ?? 'auto' }
+				};
+			}
+
+			// Default: use opencode backend (AI SDK)
 			// Validate provider is authenticated
 			const isAuthed = await Auth.isAuthenticated(config.provider);
 			if (!isAuthed && config.provider !== 'opencode') {
@@ -323,15 +381,57 @@ export namespace Agent {
 			Metrics.info('agent.ask.start', {
 				provider: config.provider,
 				model: config.model,
+				cliBackend: config.cliBackend,
 				questionLength: question.length
 			});
 
-			const cleanup = () => {
-				if (!collection.vfsId) return;
-				VirtualFs.dispose(collection.vfsId);
-				clearVirtualCollectionMetadata(collection.vfsId);
-			};
+			const cleanup = () => void cleanupCollection(collection);
 
+			// Use Cursor CLI backend if configured
+			if (config.cliBackend === 'cursor') {
+				// Cursor CLI needs a real filesystem path, not VFS
+				const realPath = collection.realPath;
+				if (!realPath) {
+					cleanup();
+					throw new AgentError({
+						message: 'Cursor CLI backend requires a real filesystem path',
+						hint: 'The collection could not create a real filesystem path. Check disk space and permissions.'
+					});
+				}
+
+				try {
+					const result = await CursorLoop.run({
+						collectionPath: realPath,
+						question,
+						agentInstructions: collection.agentInstructions,
+						model: config.model,
+						timeoutMs: config.providerTimeoutMs
+					});
+
+					Metrics.info('agent.ask.complete', {
+						cliBackend: 'cursor',
+						answerLength: result.answer.length,
+						eventCount: result.events.length
+					});
+
+					return {
+						answer: result.answer,
+						model: result.model,
+						events: result.events
+					};
+				} catch (error) {
+					Metrics.error('agent.ask.error', { error: Metrics.errorInfo(error) });
+					throw new AgentError({
+						message: 'Failed to get response from Cursor CLI',
+						hint: 'Ensure Cursor CLI is installed: curl https://cursor.com/install -fsS | bash',
+						cause: error
+					});
+				} finally {
+					cleanup();
+				}
+			}
+
+			// Default: use opencode backend (AI SDK)
 			// Validate provider is authenticated
 			const isAuthed = await Auth.isAuthenticated(config.provider);
 			if (!isAuthed && config.provider !== 'opencode') {

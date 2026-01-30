@@ -16,6 +16,9 @@ export const CONFIG_SCHEMA_URL = 'https://btca.dev/btca.schema.json';
 export const DEFAULT_MODEL = 'claude-haiku-4-5';
 export const DEFAULT_PROVIDER = 'opencode';
 export const DEFAULT_PROVIDER_TIMEOUT_MS = 300_000;
+export const DEFAULT_CLI_BACKEND = 'opencode' as const;
+
+export type CliBackend = 'opencode' | 'cursor';
 
 export const DEFAULT_RESOURCES: ResourceDefinition[] = [
 	{
@@ -47,6 +50,8 @@ export const DEFAULT_RESOURCES: ResourceDefinition[] = [
 	}
 ];
 
+const CliBackendSchema = z.enum(['opencode', 'cursor']);
+
 const StoredConfigSchema = z.object({
 	$schema: z.string().optional(),
 	dataDirectory: z.string().optional(),
@@ -54,7 +59,9 @@ const StoredConfigSchema = z.object({
 	resources: z.array(ResourceDefinitionSchema),
 	// Provider and model are optional - defaults are applied when loading
 	model: z.string().optional(),
-	provider: z.string().optional()
+	provider: z.string().optional(),
+	// CLI backend: 'opencode' (default, uses AI SDK) or 'cursor' (shells out to Cursor CLI)
+	cliBackend: CliBackendSchema.optional()
 });
 
 type StoredConfig = z.infer<typeof StoredConfigSchema>;
@@ -117,6 +124,7 @@ export namespace Config {
 		model: string;
 		provider: string;
 		providerTimeoutMs?: number;
+		cliBackend: CliBackend;
 		configPath: string;
 		getResource: (name: string) => ResourceDefinition | undefined;
 		updateModel: (provider: string, model: string) => Promise<{ provider: string; model: string }>;
@@ -537,6 +545,9 @@ export namespace Config {
 			},
 			get providerTimeoutMs() {
 				return getActiveConfig().providerTimeoutMs;
+			},
+			get cliBackend(): CliBackend {
+				return getActiveConfig().cliBackend ?? DEFAULT_CLI_BACKEND;
 			},
 			getResource: (name: string) => getMergedResources().find((r) => r.name === name),
 

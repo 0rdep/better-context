@@ -29,6 +29,12 @@
 			"description": "Timeout in milliseconds for provider requests (optional)",
 			"default": 300000
 		},
+		"cliBackend": {
+			"type": "string",
+			"enum": ["opencode", "cursor"],
+			"description": "The CLI backend to use for processing questions. 'opencode' uses the built-in AI SDK, 'cursor' shells out to the Cursor CLI (requires cursor agent to be installed)",
+			"default": "opencode"
+		},
 		"resources": {
 			"type": "array",
 			"description": "List of resources (documentation repositories or local directories) to use for context",

@@ -1,3 +1,5 @@
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 import { Config } from '../config/index.ts';
@@ -199,10 +201,40 @@ export namespace Collections {
 
 					const instructionBlocks = loadedResources.map(createCollectionInstructionBlock);
 
+					// Create a real collection directory with symlinks for external CLI tools (e.g., Cursor)
+					let realPath: string | undefined;
+					let tempDir: string | undefined;
+					try {
+						tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'btca-collection-'));
+						for (const resource of loadedResources) {
+							const resourceAbsPath = await resource.getAbsoluteDirectoryPath();
+							const symlinkPath = path.join(tempDir, resource.fsName);
+							// On Windows, directory symlinks often require admin unless using junctions.
+							if (os.platform() === 'win32') {
+								await fs.symlink(resourceAbsPath, symlinkPath, 'junction');
+							} else {
+								await fs.symlink(resourceAbsPath, symlinkPath);
+							}
+						}
+						realPath = tempDir;
+						Metrics.info('collections.realpath.created', { path: tempDir });
+					} catch (cause) {
+						// Non-fatal: VFS will still work, just external CLI tools won't
+						Metrics.error('collections.realpath.failed', { error: String(cause) });
+						if (tempDir) {
+							try {
+								await fs.rm(tempDir, { recursive: true, force: true });
+							} catch {
+								// ignore cleanup errors
+							}
+						}
+					}
+
 					return {
 						path: collectionPath,
 						agentInstructions: instructionBlocks.join('\n\n'),
-						vfsId
+						vfsId,
+						realPath
 					};
 				})
 		};

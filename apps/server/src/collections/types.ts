@@ -5,6 +5,8 @@ export type CollectionResult = {
 	path: string;
 	agentInstructions: string;
 	vfsId?: string;
+	/** Real filesystem path with symlinks to resources (for external CLI tools like Cursor) */
+	realPath?: string;
 };
 
 export class CollectionError extends Error {
